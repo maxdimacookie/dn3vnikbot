@@ -29,7 +29,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Токен берётся из переменных окружения Render (переменная BOT_TOKEN)
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 
 user_sessions = {}
@@ -59,8 +58,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 def fetch_homework(raw_cookie: str) -> str:
-    """Точечный парсер оценок и ДЗ для Dnevnik.ru"""
-    target_url = "https://dnevnik.ru/r/saratov/marks"
+    """Парсер специальной страницы Домашних Заданий (v2)"""
+    # Используем прямую страницу с домашними заданиями
+    target_url = "https://schools.dnevnik.ru/v2/r/saratov/homework"
     
     session = requests.Session()
     clean_cookie = raw_cookie.replace("Cookie:", "").strip()
@@ -78,34 +78,43 @@ def fetch_homework(raw_cookie: str) -> str:
             return "❌ Сессия истекла! Скопируйте свежую строку `Cookie:` из вкладки Network."
 
         soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # Удаляем скрипты, шапку и стили
+        for bad_tag in soup(["script", "style", "header", "footer", "nav"]):
+            bad_tag.extract()
+
         hw_items = []
 
-        # 1. Поиск по специфическим классам Дневника (предметы, задания, оценки)
-        items = soup.find_all(['td', 'div', 'tr', 'li'], class_=['subject', 'work', 'homework', 'mark', 'task'])
-        for item in items:
-            text = item.get_text(" ", strip=True)
-            if text and len(text) > 3 and text not in hw_items:
-                if not any(bad in text.lower() for bad in ['профиль', 'выйти', 'настройки', 'дневник.ру']):
+        # Парсим строки таблицы с ДЗ
+        tables = soup.find_all('table')
+        for table in tables:
+            rows = table.find_all('tr')
+            for tr in rows:
+                # Извлекаем текст из всех ячеек строки
+                cells = [td.get_text(" ", strip=True) for td in tr.find_all(['td', 'th'])]
+                if cells:
+                    # Фильтруем пустые элементы и соединяем разделителем
+                    filtered_cells = [c for c in cells if c and len(c) > 1]
+                    if len(filtered_cells) >= 2:
+                        line = " | ".join(filtered_cells)
+                        # Исключаем технический мусор
+                        bad_words = ['профиль', 'настройки', 'выйти', 'помощь', 'серия', 'номер']
+                        if not any(bad in line.lower() for bad in bad_words):
+                            hw_items.append(line)
+
+        # Резервный поиск по блокам, если таблица не собралась
+        if not hw_items:
+            for div in soup.find_all(['div', 'td', 'li'], class_=['homework', 'task', 'work']):
+                text = div.get_text(" ", strip=True)
+                if text and len(text) > 5 and text not in hw_items:
                     hw_items.append(text)
 
-        # 2. Если по классам ничего не нашлось, забираем данные из всех таблиц на странице
-        if not hw_items:
-            tables = soup.find_all('table')
-            for table in tables:
-                for tr in table.find_all('tr'):
-                    cells = [td.get_text(" ", strip=True) for td in tr.find_all(['td', 'th'])]
-                    if len(cells) >= 1:
-                        line = " | ".join([c for c in cells if c])
-                        if len(line) > 3 and line not in hw_items:
-                            if not any(bad in line.lower() for bad in ['профиль', 'выйти', 'настройки', 'помощь']):
-                                hw_items.append(line)
-
         if hw_items:
-            result_text = "📋 **Данные с вашей страницы Dnevnik.ru:**\n\n"
-            result_text += "\n\n".join(hw_items[:25])
+            result_text = "📋 **Ваше Домашнее Задание:**\n\n"
+            result_text += "\n\n".join(hw_items[:20])
             return result_text
         else:
-            return f"ℹ️ Таблицы не найдены. Возможно, на этой неделе нет записей.\nСсылка: {target_url}"
+            return f"ℹ️ Страница открыта, но записей с ДЗ на этой странице не найдено.\nСсылка: {target_url}"
 
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
@@ -120,7 +129,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if user_id not in user_sessions:
             await update.message.reply_text("Сначала отправьте вашу строку `Cookie:` из браузера!", parse_mode="Markdown")
             return
-        await update.message.reply_text("⏳ Запрашиваю данные с Дневника...")
+        await update.message.reply_text("⏳ Запрашиваю домашнее задание...")
         data = fetch_homework(user_sessions[user_id])
         await update.message.reply_text(data, parse_mode="Markdown")
         return
@@ -131,7 +140,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Cookie сброшен. Отправьте новую строку `Cookie:` для входа.")
         return
 
-    # Сохраняем строку Cookie
     user_sessions[user_id] = text
     await update.message.reply_text("✅ Cookie сохранен! Проверяю получение ДЗ...", reply_markup=get_keyboard())
     
@@ -152,15 +160,11 @@ async def start_bot() -> None:
     await app_tg.start()
     
     print("🤖 Бот успешно запущен!")
-    
-    # Бесконечный цикл удерживает скрипт активным
     while True:
         await asyncio.sleep(3600)
 
 def main() -> None:
-    # Запускаем Flask в отдельном потоке
     threading.Thread(target=run_web_server, daemon=True).start()
-    # Запускаем Telegram бота в основном потоке
     asyncio.run(start_bot())
 
 if __name__ == "__main__":
