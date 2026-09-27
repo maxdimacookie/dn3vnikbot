@@ -45,7 +45,7 @@ async def send_long_message(update: Update, text: str):
     """Отправка текста частями, если он превышает лимит Telegram"""
     max_len = 4000
     if len(text) <= max_len:
-        await update.message.reply_text(text)
+        await update.message.reply_text(text, parse_mode="Markdown")
         return
 
     parts = []
@@ -59,7 +59,7 @@ async def send_long_message(update: Update, text: str):
         parts.append(text)
 
     for part in parts:
-        await update.message.reply_text(part)
+        await update.message.reply_text(part, parse_mode="Markdown")
 
 def get_tomorrow_date_str() -> str:
     """Возвращает завтрашнюю дату в формате ДД.ММ.ГГГГ"""
@@ -86,7 +86,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def fetch_homework(raw_cookie: str) -> str:
     tomorrow_str = get_tomorrow_date_str()
     
-    # Формируем динамический URL с датой на завтра
     target_url = (
         f"https://schools.dnevnik.ru/v2/r/saratov/homework"
         f"?school=53421&tab=&studyYear=2026&subject="
@@ -140,25 +139,39 @@ def fetch_homework(raw_cookie: str) -> str:
             for tr in rows:
                 cells = [td.get_text(" ", strip=True) for td in tr.find_all(['td', 'th'])]
                 if cells:
-                    filtered_cells = [c for c in cells if c and len(c) > 1]
-                    if len(filtered_cells) >= 2:
-                        line = " | ".join(filtered_cells)
-                        bad_words = ['профиль', 'настройки', 'выйти', 'помощь']
-                        if not any(bad in line.lower() for bad in bad_words):
-                            hw_items.append(line)
+                    filtered_cells = [c for c in cells if c and len(c) > 0]
+                    
+                    # Игнорируем шапку таблицы
+                    if any("предмет" in c.lower() or "школа" in c.lower() for c in filtered_cells):
+                        continue
 
-        if not hw_items:
-            for div in soup.find_all(['div', 'td', 'li'], class_=['homework', 'task', 'work']):
-                text = div.get_text(" ", strip=True)
-                if text and len(text) > 5 and text not in hw_items:
-                    hw_items.append(text)
+                    subject = ""
+                    homework = ""
+
+                    if len(filtered_cells) >= 3:
+                        # Разбираем структуру: [ДЗ (опционально)], [Школа], [Предмет], ...
+                        if "моу" in filtered_cells[0].lower() or "сош" in filtered_cells[0].lower():
+                            # Формат без текста ДЗ: [Школа], [Предмет], [Урок], ...
+                            subject = filtered_cells[1]
+                            homework = ""
+                        else:
+                            # Формат с текстом ДЗ: [ДЗ], [Школа], [Предмет], ...
+                            homework = filtered_cells[0]
+                            subject = filtered_cells[2]
+
+                    # Очищаем текст ДЗ и проверяем его длину
+                    clean_hw = homework.strip()
+
+                    # Фильтруем то, у чего длина ДЗ 1 символ или меньше (точки, тире, пустота)
+                    if len(clean_hw) > 1:
+                        hw_items.append(f"📌 **{subject}:** {clean_hw}")
 
         if hw_items:
             result_text = f"📋 **Ваше Домашнее Задание на {tomorrow_str}:**\n\n"
-            result_text += "\n\n".join(hw_items[:30])
+            result_text += "\n\n".join(hw_items)
             return result_text
         else:
-            return f"ℹ️ На {tomorrow_str} домашнего задания не найдено (или уроков нет).\nURL: {target_url}"
+            return f"ℹ️ На {tomorrow_str} домашнего задания не найдено (или уроки без ДЗ).\nURL: {target_url}"
 
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
