@@ -67,7 +67,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def fetch_homework(session: requests.Session) -> str:
     """Парсинг ДЗ с дневника с автоматическим переключением на следующую неделю по выходным"""
-    target_url = "https://dnevnik.ru"
+    # Базовый URL страницы оценок для Саратовской области
+    base_url = "https://dnevnik.ru"
     
     # Определяем текущий день недели (0 - понедельник, 6 - воскресенье)
     today = datetime.date.today()
@@ -77,14 +78,18 @@ def fetch_homework(session: requests.Session) -> str:
     if weekday >= 5:
         next_monday = today + datetime.timedelta(days=(7 - weekday))
         date_str = next_monday.strftime("%Y-%m-%d")
-        target_url = f"https://dnevnik.ru?date={date_str}"
+        # Для горизонтальной ленты календаря Дневник.ру использует параметр week
+        target_url = f"{base_url}?week={date_str}"
+    else:
+        target_url = base_url
 
     try:
         resp = session.get(target_url, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
 
         hw_items = []
-        for row in soup.find_all(['tr', 'div'], class_=['homework', 'task', 'work']):
+        # Ищем элементы домашнего задания (включая текстовые блоки в ленте календаря)
+        for row in soup.find_all(['tr', 'div', 'p'], class_=['homework', 'task', 'work', 'work-item']):
             text_content = row.get_text(strip=True)
             if text_content:
                 hw_items.append(text_content)
@@ -154,7 +159,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"❌ Ошибка соединения: {e}")
 
 
-# Новая асинхронная функция запуска бота
+# Асинхронная функция запуска бота
 async def start_bot() -> None:
     if not TELEGRAM_TOKEN:
         print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
