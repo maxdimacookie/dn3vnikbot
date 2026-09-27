@@ -35,11 +35,12 @@ TELEGRAM_TOKEN = os.environ.get(BOT_TOKEN)
 
 user_sessions = {}
 
-def get_keyboard()
+def get_keyboard():
     keyboard = [
-        [KeyboardButton(📚 Получить ДЗ)],
-        [KeyboardButton(🚪 Выйти)]
+        [KeyboardButton("📚 Получить ДЗ")],
+        [KeyboardButton("🚪 Выйти")]
     ]
+
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start_command(update Update, context ContextTypes.DEFAULT_TYPE) - None
