@@ -59,7 +59,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 def fetch_homework(raw_cookie: str) -> str:
-    """Универсальный парсер ДЗ для Dnevnik.ru"""
+    """Очищенный парсер ДЗ для Dnevnik.ru"""
     target_url = "https://dnevnik.ru/r/saratov/marks"
     
     session = requests.Session()
@@ -75,39 +75,44 @@ def fetch_homework(raw_cookie: str) -> str:
         resp = session.get(target_url, timeout=12, allow_redirects=True)
         
         if "login" in resp.url.lower():
-            return "❌ Сессия истекла! Скопируйте свежую строку `Cookie:` из вкладки Network в браузере."
+            return "❌ Сессия истекла! Скопируйте свежую строку `Cookie:` из вкладки Network."
 
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # Очищаем документ от ненужных скриптов и стилей
-        for script in soup(["script", "style"]):
-            script.extract()
+        # 1. Удаляем шапку, меню, скрипты и подвал, чтобы не вытаскивать имя и профиль
+        for bad_tag in soup(["script", "style", "header", "footer", "nav"]):
+            bad_tag.extract()
+            
+        # Удаляем блоки профиля по классам
+        for bad_class in soup.find_all(class_=['user-profile', 'header', 'top-menu', 'user-nav']):
+            bad_class.extract()
 
         hw_items = []
 
-        # 1. Сначала ищем ячейки таблиц
+        # 2. Ищем строки таблиц с уроками
         rows = soup.find_all('tr')
         for tr in rows:
             cells = [td.get_text(" ", strip=True) for td in tr.find_all(['td', 'th'])]
             if len(cells) >= 2:
                 row_text = " | ".join([c for c in cells if c])
-                if len(row_text) > 5 and not any(bad in row_text.lower() for bad in ['посещаемость', 'средний балл', 'итоговые']):
+                # Фильтруем служебный мусор
+                bad_words = ['профиль', 'выйти', 'настройки', 'помощь', 'ученик', 'посещаемость', 'средний балл']
+                if len(row_text) > 5 and not any(bad in row_text.lower() for bad in bad_words):
                     hw_items.append(row_text)
 
-        # 2. Если таблицы не дали результат, забираем текстовые блоки
+        # 3. Резервный поиск по спискам и блокам ДЗ
         if not hw_items:
-            for el in soup.find_all(['div', 'p', 'li', 'span']):
-                text = el.get_text(strip=True)
-                if 10 < len(text) < 300 and any(kw in text.lower() for kw in ['д/з', 'домашнее', 'задание', 'стр', 'упр', 'параграф']):
-                    if text not in hw_items:
-                        hw_items.append(text)
+            for el in soup.find_all(['div', 'li', 'td'], class_=['homework', 'task', 'work-item', 'dnevnik-hw', 'subject']):
+                text = el.get_text(" ", strip=True)
+                if text and len(text) > 3 and text not in hw_items:
+                    hw_items.append(text)
 
         if hw_items:
-            result_text = "📋 **Ваше домашнее задание / Дневник:**\n\n"
+            result_text = "📋 **Ваше домашнее задание:**\n\n"
             result_text += "\n\n".join(hw_items[:20])
             return result_text
         else:
-            return f"ℹ️ Страница открыта, но текст ДЗ не найден. Возможно, на эту неделю нет заданий.\nСсылка: {target_url}"
+            return f"ℹ️ Вы вошли в аккаунт, но список ДЗ пуст или не найден на этой странице.\nПроверьте ссылку в браузере: {target_url}"
 
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
