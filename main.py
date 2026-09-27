@@ -1,7 +1,8 @@
 import logging
 import os
 import threading
-import asyncio  # Добавили встроенную библиотеку для управления потоками
+import asyncio
+import datetime
 from flask import Flask
 import requests
 from bs4 import BeautifulSoup
@@ -20,6 +21,7 @@ def health():
     return "OK", 200
 
 def run_web_server():
+    # Render автоматически выделяет порт в переменной окружения PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 # ----------------------------------------
@@ -64,7 +66,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def fetch_homework(session: requests.Session) -> str:
+    """Парсинг ДЗ с дневника с автоматическим переключением на следующую неделю по выходным"""
     target_url = "https://dnevnik.ru"
+    
+    # Определяем текущий день недели (0 - понедельник, 6 - воскресенье)
+    today = datetime.date.today()
+    weekday = today.weekday()
+    
+    # Если сегодня суббота (5) или воскресенье (6), запрашиваем страницу следующей недели
+    if weekday >= 5:
+        next_monday = today + datetime.timedelta(days=(7 - weekday))
+        date_str = next_monday.strftime("%Y-%m-%d")
+        target_url = f"https://dnevnik.ru?date={date_str}"
+
     try:
         resp = session.get(target_url, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -84,9 +98,9 @@ def fetch_homework(session: requests.Session) -> str:
                         hw_items.append(" — ".join(tds))
 
         if hw_items:
-            return "📋 Ваше домашнее задание:\n\n" + "\n\n".join(hw_items[:15])
+            return "📋 **Ваше домашнее задание:**\n\n" + "\n\n".join(hw_items[:15])
         else:
-            return "ℹ️ Список ДЗ пуст или не удалось его распарсить. Ссылка: https://dnevnik.ru"
+            return f"ℹ️ Список ДЗ пуст или не удалось его распарсить. Проверьте ссылку в браузере: {target_url}"
     except Exception as e:
         return f"⚠️ Ошибка при запросе: {e}"
 
@@ -140,7 +154,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"❌ Ошибка соединения: {e}")
 
 
-# Новая асинхронная функция запуска
+# Новая асинхронная функция запуска бота
 async def start_bot() -> None:
     if not TELEGRAM_TOKEN:
         print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
