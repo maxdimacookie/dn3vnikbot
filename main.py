@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 import asyncio
+from datetime import datetime, timedelta
 from flask import Flask
 import requests
 from bs4 import BeautifulSoup
@@ -35,13 +36,13 @@ user_sessions = {}
 
 def get_keyboard():
     keyboard = [
-        [KeyboardButton("📚 Получить ДЗ")],
+        [KeyboardButton("📚 Получить ДЗ на завтра")],
         [KeyboardButton("🚪 Выйти / Сбросить Cookie")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def send_long_message(update: Update, text: str):
-    """Отправка текста частями, если он превышает лимит Telegram в 4096 символов"""
+    """Отправка текста частями, если он превышает лимит Telegram"""
     max_len = 4000
     if len(text) <= max_len:
         await update.message.reply_text(text)
@@ -60,6 +61,11 @@ async def send_long_message(update: Update, text: str):
     for part in parts:
         await update.message.reply_text(part)
 
+def get_tomorrow_date_str() -> str:
+    """Возвращает завтрашнюю дату в формате ДД.ММ.ГГГГ"""
+    tomorrow = datetime.now() + timedelta(days=1)
+    return tomorrow.strftime("%d.%m.%Y")
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -67,7 +73,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if user_id in user_sessions:
         await update.message.reply_text(
-            "Вы уже авторизованы! Нажмите кнопку ниже, чтобы получить ДЗ.",
+            "Вы уже авторизованы! Нажмите кнопку ниже, чтобы получить ДЗ на завтра.",
             reply_markup=get_keyboard()
         )
         return
@@ -78,7 +84,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 def fetch_homework(raw_cookie: str) -> str:
-    target_url = "https://schools.dnevnik.ru/v2/r/saratov/homework"
+    tomorrow_str = get_tomorrow_date_str()
+    
+    # Формируем динамический URL с датой на завтра
+    target_url = (
+        f"https://schools.dnevnik.ru/v2/r/saratov/homework"
+        f"?school=53421&tab=&studyYear=2026&subject="
+        f"&datefrom={tomorrow_str}&dateto={tomorrow_str}&choose=%D0%9F%D0%BE%D0%BA%D0%B0%D0%B7%D0%B0%D1%82%D1%8C"
+    )
     
     session = requests.Session()
     clean_cookie = raw_cookie.strip()
@@ -141,11 +154,11 @@ def fetch_homework(raw_cookie: str) -> str:
                     hw_items.append(text)
 
         if hw_items:
-            result_text = "📋 Ваше Домашнее Задание:\n\n"
+            result_text = f"📋 **Ваше Домашнее Задание на {tomorrow_str}:**\n\n"
             result_text += "\n\n".join(hw_items[:30])
             return result_text
         else:
-            return f"ℹ️ Страница открыта, но предметов с ДЗ на ней не найдено.\nСсылка: {target_url}"
+            return f"ℹ️ На {tomorrow_str} домашнего задания не найдено (или уроков нет).\nURL: {target_url}"
 
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
@@ -156,11 +169,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id if update.effective_user else 0
     text = update.message.text.strip()
 
-    if text == "📚 Получить ДЗ":
+    if text in ["📚 Получить ДЗ", "📚 Получить ДЗ на завтра"]:
         if user_id not in user_sessions:
             await update.message.reply_text("Сначала отправьте вашу строку Cookie из браузера!")
             return
-        await update.message.reply_text("⏳ Запрашиваю домашнее задание...")
+        tomorrow_str = get_tomorrow_date_str()
+        await update.message.reply_text(f"⏳ Запрашиваю домашнее задание на завтра ({tomorrow_str})...")
         data = fetch_homework(user_sessions[user_id])
         await send_long_message(update, data)
         return
@@ -172,7 +186,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     user_sessions[user_id] = text
-    await update.message.reply_text("✅ Cookie сохранен! Проверяю получение ДЗ...", reply_markup=get_keyboard())
+    tomorrow_str = get_tomorrow_date_str()
+    await update.message.reply_text(
+        f"✅ Cookie сохранен! Проверяю получение ДЗ на завтра ({tomorrow_str})...", 
+        reply_markup=get_keyboard()
+    )
     
     data = fetch_homework(text)
     await send_long_message(update, data)
