@@ -2,7 +2,6 @@ import logging
 import os
 import threading
 import asyncio
-import datetime
 from flask import Flask
 import requests
 from bs4 import BeautifulSoup
@@ -30,7 +29,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Токен берется из переменных окружения Render
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 
 user_sessions = {}
@@ -38,7 +36,7 @@ user_sessions = {}
 def get_keyboard():
     keyboard = [
         [KeyboardButton("📚 Получить ДЗ")],
-        [KeyboardButton("🚪 Выйти")]
+        [KeyboardButton("🚪 Выйти / Сбросить Cookie")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -47,37 +45,46 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     user_id = update.effective_user.id if update.effective_user else 0
 
-    if user_id in user_sessions and user_sessions[user_id].get("logged_in"):
+    if user_id in user_sessions:
         await update.message.reply_text(
-            "Вы уже вошли в систему! Нажмите кнопку ниже, чтобы получить ДЗ.",
+            "Вы уже авторизованы! Нажмите кнопку ниже, чтобы получить ДЗ.",
             reply_markup=get_keyboard()
         )
         return
 
     await update.message.reply_text(
-        "Привет! Я бот для получения домашнего задания с Dnevnik.ru.\n\n"
-        "Отправьте ваш **логин** и **пароль** от Dnevnik.ru через пробел:\n"
-        "`логин пароль`",
+        "Привет! Из-за принудительного входа через Госуслуги авторизация работает по **Cookie**.\n\n"
+        "Отправьте мне значение ключа `dnevnik_id` из браузера:",
         parse_mode="Markdown"
     )
 
-def fetch_homework(session: requests.Session) -> str:
-    """Парсинг ДЗ со страницы Саратовской области (Маркс)"""
+def fetch_homework(cookie_val: str) -> str:
+    """Запрос ДЗ с использованием сессионных куки"""
     target_url = "https://dnevnik.ru/r/saratov/marks"
+    
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+    
+    # Подставляем авторизационный куки
+    session.cookies.set('dnevnik_id', cookie_val, domain='dnevnik.ru')
 
     try:
         resp = session.get(target_url, timeout=12)
-        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # Если перенаправило на страницу логина — куки устарел
+        if "login" in resp.url.lower():
+            return "❌ Ошибка: Сессия истекла! Пожалуйста, скопируйте новый `dnevnik_id` из браузера и отправьте его боту."
 
+        soup = BeautifulSoup(resp.text, 'html.parser')
         hw_items = []
         
-        # 1. Основной поиск по элементам ДЗ
         for row in soup.find_all(['tr', 'div', 'p', 'td'], class_=['homework', 'task', 'work', 'work-item', 'dnevnik-hw']):
             text_content = row.get_text(strip=True)
             if text_content and text_content not in hw_items:
                 hw_items.append(text_content)
 
-        # 2. Резервный поиск по таблицам (исправлена ошибка tables.find_all)
         if not hw_items:
             tables = soup.find_all('table')
             if tables:
@@ -91,7 +98,7 @@ def fetch_homework(session: requests.Session) -> str:
         if hw_items:
             return "📋 **Ваше домашнее задание:**\n\n" + "\n\n".join(hw_items[:15])
         else:
-            return f"ℹ️ Не удалось найти блоки с ДЗ. Возможно, страница изменилась или список пуст.\nСсылка: {target_url}"
+            return f"ℹ️ Не удалось распарсить блоки ДЗ. Проверьте страницу в браузере: {target_url}"
 
     except Exception as e:
         return f"⚠️ Ошибка при запросе к Dnevnik.ru: {e}"
@@ -103,52 +110,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text.strip()
 
     if text == "📚 Получить ДЗ":
-        if user_id not in user_sessions or not user_sessions[user_id].get("logged_in"):
-            await update.message.reply_text("Сначала войдите в аккаунт! Введите: `логин пароль`", parse_mode="Markdown")
+        if user_id not in user_sessions:
+            await update.message.reply_text("Сначала отправьте ваш `dnevnik_id`!", parse_mode="Markdown")
             return
         await update.message.reply_text("⏳ Запрашиваю данные с Дневника...")
-        data = fetch_homework(user_sessions[user_id]["session"])
+        data = fetch_homework(user_sessions[user_id])
         await update.message.reply_text(data, parse_mode="Markdown")
         return
 
-    if text == "🚪 Выйти":
+    if text == "🚪 Выйти / Сбросить Cookie":
         if user_id in user_sessions:
             del user_sessions[user_id]
-        await update.message.reply_text("Вы вышли из аккаунта. Чтобы войти снова, введите `логин пароль`.")
+        await update.message.reply_text("Cookie сброшен. Отправьте новый `dnevnik_id` для входа.")
         return
 
-    parts = text.split(maxsplit=1)
-    if len(parts) != 2:
-        await update.message.reply_text("⚠️ Неверный формат. Отправьте логин и пароль через пробел:\n`логин пароль`", parse_mode="Markdown")
-        return
-
-    login_val, password_val = parts[0], parts[1]
-    await update.message.reply_text("🔑 Авторизуюсь на Dnevnik.ru...")
-
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-
-    try:
-        # Важно: Вход отправляется именно на форму логина!
-        login_url = "https://login.dnevnik.ru/login"
-        res = session.post(
-            login_url,
-            data={'login': login_val, 'password': password_val, 'Caption': 'Войти'},
-            timeout=10
-        )
-        
-        # Проверяем, остался ли пользователь на странице логина (значит пароль неверный)
-        if "login" in res.url.lower() or "error" in res.text.lower():
-            await update.message.reply_text("❌ Ошибка входа: неверный логин или пароль!")
-            return
-
-        user_sessions[user_id] = {"session": session, "logged_in": True}
-        await update.message.reply_text("✅ Успешный вход!", reply_markup=get_keyboard())
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка соединения: {e}")
+    # Сохраняем переданный куки
+    user_sessions[user_id] = text
+    await update.message.reply_text("✅ Cookie сохранен! Проверяю получение ДЗ...", reply_markup=get_keyboard())
+    
+    # Сразу пробуем сделать тестовый запрос
+    data = fetch_homework(text)
+    await update.message.reply_text(data, parse_mode="Markdown")
 
 async def start_bot() -> None:
     if not TELEGRAM_TOKEN:
@@ -164,7 +146,6 @@ async def start_bot() -> None:
     await app.start()
     
     print("🤖 Бот успешно запущен!")
-    
     while True:
         await asyncio.sleep(3600)
 
