@@ -29,6 +29,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# Токен берётся из переменных окружения Render (переменная BOT_TOKEN)
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 
 user_sessions = {}
@@ -53,55 +54,63 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await update.message.reply_text(
-        "Привет! Из-за принудительного входа через Госуслуги авторизация работает по **Cookie**.\n\n"
-        "Отправьте мне значение ключа `dnevnik_id` из браузера:",
+        "Привет! Для получения ДЗ отправьте мне полную строку `Cookie:` из вкладки Network в браузере:",
         parse_mode="Markdown"
     )
 
-def fetch_homework(cookie_val: str) -> str:
-    """Запрос ДЗ с использованием сессионных куки"""
+def fetch_homework(raw_cookie: str) -> str:
+    """Универсальный парсер ДЗ для Dnevnik.ru"""
     target_url = "https://dnevnik.ru/r/saratov/marks"
     
     session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
+    clean_cookie = raw_cookie.replace("Cookie:", "").strip()
     
-    # Подставляем авторизационный куки
-    session.cookies.set('dnevnik_id', cookie_val, domain='dnevnik.ru')
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Cookie': clean_cookie
+    })
 
     try:
-        resp = session.get(target_url, timeout=12)
+        resp = session.get(target_url, timeout=12, allow_redirects=True)
         
-        # Если перенаправило на страницу логина — куки устарел
         if "login" in resp.url.lower():
-            return "❌ Ошибка: Сессия истекла! Пожалуйста, скопируйте новый `dnevnik_id` из браузера и отправьте его боту."
+            return "❌ Сессия истекла! Скопируйте свежую строку `Cookie:` из вкладки Network в браузере."
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-        hw_items = []
         
-        for row in soup.find_all(['tr', 'div', 'p', 'td'], class_=['homework', 'task', 'work', 'work-item', 'dnevnik-hw']):
-            text_content = row.get_text(strip=True)
-            if text_content and text_content not in hw_items:
-                hw_items.append(text_content)
+        # Очищаем документ от ненужных скриптов и стилей
+        for script in soup(["script", "style"]):
+            script.extract()
 
+        hw_items = []
+
+        # 1. Сначала ищем ячейки таблиц
+        rows = soup.find_all('tr')
+        for tr in rows:
+            cells = [td.get_text(" ", strip=True) for td in tr.find_all(['td', 'th'])]
+            if len(cells) >= 2:
+                row_text = " | ".join([c for c in cells if c])
+                if len(row_text) > 5 and not any(bad in row_text.lower() for bad in ['посещаемость', 'средний балл', 'итоговые']):
+                    hw_items.append(row_text)
+
+        # 2. Если таблицы не дали результат, забираем текстовые блоки
         if not hw_items:
-            tables = soup.find_all('table')
-            if tables:
-                for tr in tables[0].find_all('tr'):
-                    tds = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
-                    if len(tds) >= 2:
-                        line = " — ".join(filter(None, tds))
-                        if line and line not in hw_items:
-                            hw_items.append(line)
+            for el in soup.find_all(['div', 'p', 'li', 'span']):
+                text = el.get_text(strip=True)
+                if 10 < len(text) < 300 and any(kw in text.lower() for kw in ['д/з', 'домашнее', 'задание', 'стр', 'упр', 'параграф']):
+                    if text not in hw_items:
+                        hw_items.append(text)
 
         if hw_items:
-            return "📋 **Ваше домашнее задание:**\n\n" + "\n\n".join(hw_items[:15])
+            result_text = "📋 **Ваше домашнее задание / Дневник:**\n\n"
+            result_text += "\n\n".join(hw_items[:20])
+            return result_text
         else:
-            return f"ℹ️ Не удалось распарсить блоки ДЗ. Проверьте страницу в браузере: {target_url}"
+            return f"ℹ️ Страница открыта, но текст ДЗ не найден. Возможно, на эту неделю нет заданий.\nСсылка: {target_url}"
 
     except Exception as e:
-        return f"⚠️ Ошибка при запросе к Dnevnik.ru: {e}"
+        return f"⚠️ Ошибка соединения: {e}"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
@@ -111,7 +120,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if text == "📚 Получить ДЗ":
         if user_id not in user_sessions:
-            await update.message.reply_text("Сначала отправьте ваш `dnevnik_id`!", parse_mode="Markdown")
+            await update.message.reply_text("Сначала отправьте вашу строку `Cookie:` из браузера!", parse_mode="Markdown")
             return
         await update.message.reply_text("⏳ Запрашиваю данные с Дневника...")
         data = fetch_homework(user_sessions[user_id])
@@ -121,14 +130,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if text == "🚪 Выйти / Сбросить Cookie":
         if user_id in user_sessions:
             del user_sessions[user_id]
-        await update.message.reply_text("Cookie сброшен. Отправьте новый `dnevnik_id` для входа.")
+        await update.message.reply_text("Cookie сброшен. Отправьте новую строку `Cookie:` для входа.")
         return
 
-    # Сохраняем переданный куки
+    # Сохраняем строку Cookie
     user_sessions[user_id] = text
     await update.message.reply_text("✅ Cookie сохранен! Проверяю получение ДЗ...", reply_markup=get_keyboard())
     
-    # Сразу пробуем сделать тестовый запрос
     data = fetch_homework(text)
     await update.message.reply_text(data, parse_mode="Markdown")
 
