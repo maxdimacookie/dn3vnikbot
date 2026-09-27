@@ -53,13 +53,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await update.message.reply_text(
-        "Привет! Для получения ДЗ отправьте мне полную строку `Cookie:` из вкладки Network в браузере:",
+        "Привет! Для получения ДЗ отправьте мне полную строку `Cookie:` из вкладки Network в браузере со страницы `schools.dnevnik.ru`:",
         parse_mode="Markdown"
     )
 
 def fetch_homework(raw_cookie: str) -> str:
-    """Парсер специальной страницы Домашних Заданий (v2)"""
-    # Используем прямую страницу с домашними заданиями
+    """Парсер ДЗ с полной эмуляцией заголовков браузера"""
     target_url = "https://schools.dnevnik.ru/v2/r/saratov/homework"
     
     session = requests.Session()
@@ -67,42 +66,53 @@ def fetch_homework(raw_cookie: str) -> str:
     
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'max-age=0',
+        'Connection': 'keep-alive',
+        'Host': 'schools.dnevnik.ru',
+        'Referer': 'https://schools.dnevnik.ru/',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
         'Cookie': clean_cookie
     })
 
     try:
-        resp = session.get(target_url, timeout=12, allow_redirects=True)
+        resp = session.get(target_url, timeout=12, allow_redirects=False)
         
-        if "login" in resp.url.lower():
-            return "❌ Сессия истекла! Скопируйте свежую строку `Cookie:` из вкладки Network."
+        if resp.status_code in [301, 302] and "login" in resp.headers.get("Location", "").lower():
+            return "❌ Сессия отклонена сервером! Скопируйте свежую строку Cookie со страницы `schools.dnevnik.ru`."
 
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        # Удаляем скрипты, шапку и стили
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+        else:
+            resp = session.get(target_url, timeout=12, allow_redirects=True)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+
         for bad_tag in soup(["script", "style", "header", "footer", "nav"]):
             bad_tag.extract()
 
         hw_items = []
 
-        # Парсим строки таблицы с ДЗ
         tables = soup.find_all('table')
         for table in tables:
             rows = table.find_all('tr')
             for tr in rows:
-                # Извлекаем текст из всех ячеек строки
                 cells = [td.get_text(" ", strip=True) for td in tr.find_all(['td', 'th'])]
                 if cells:
-                    # Фильтруем пустые элементы и соединяем разделителем
                     filtered_cells = [c for c in cells if c and len(c) > 1]
                     if len(filtered_cells) >= 2:
                         line = " | ".join(filtered_cells)
-                        # Исключаем технический мусор
-                        bad_words = ['профиль', 'настройки', 'выйти', 'помощь', 'серия', 'номер']
+                        bad_words = ['профиль', 'настройки', 'выйти', 'помощь']
                         if not any(bad in line.lower() for bad in bad_words):
                             hw_items.append(line)
 
-        # Резервный поиск по блокам, если таблица не собралась
         if not hw_items:
             for div in soup.find_all(['div', 'td', 'li'], class_=['homework', 'task', 'work']):
                 text = div.get_text(" ", strip=True)
