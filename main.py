@@ -40,6 +40,26 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+async def send_long_message(update: Update, text: str):
+    """Отправка текста частями, если он превышает лимит Telegram в 4096 символов"""
+    max_len = 4000
+    if len(text) <= max_len:
+        await update.message.reply_text(text)
+        return
+
+    parts = []
+    while len(text) > max_len:
+        split_at = text.rfind('\n', 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        parts.append(text[:split_at])
+        text = text[split_at:].strip()
+    if text:
+        parts.append(text)
+
+    for part in parts:
+        await update.message.reply_text(part)
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -53,16 +73,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await update.message.reply_text(
-        "Привет! Для получения ДЗ отправьте мне полную строку `Cookie:` из вкладки Network в браузере со страницы `schools.dnevnik.ru`:",
+        "Привет! Отправьте мне строку Cookie из браузера со страницы `schools.dnevnik.ru`:",
         parse_mode="Markdown"
     )
 
 def fetch_homework(raw_cookie: str) -> str:
-    """Парсер ДЗ с полной эмуляцией заголовков браузера"""
     target_url = "https://schools.dnevnik.ru/v2/r/saratov/homework"
     
     session = requests.Session()
-    clean_cookie = raw_cookie.replace("Cookie:", "").strip()
+    clean_cookie = raw_cookie.strip()
+    if clean_cookie.lower().startswith("cookie:"):
+        clean_cookie = clean_cookie[7:].strip()
     
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -87,7 +108,7 @@ def fetch_homework(raw_cookie: str) -> str:
         resp = session.get(target_url, timeout=12, allow_redirects=False)
         
         if resp.status_code in [301, 302] and "login" in resp.headers.get("Location", "").lower():
-            return "❌ Сессия отклонена сервером! Скопируйте свежую строку Cookie со страницы `schools.dnevnik.ru`."
+            return "❌ Сессия отклонена сервером! Скопируйте свежую строку Cookie со страницы schools.dnevnik.ru."
 
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
@@ -120,11 +141,11 @@ def fetch_homework(raw_cookie: str) -> str:
                     hw_items.append(text)
 
         if hw_items:
-            result_text = "📋 **Ваше Домашнее Задание:**\n\n"
-            result_text += "\n\n".join(hw_items[:20])
+            result_text = "📋 Ваше Домашнее Задание:\n\n"
+            result_text += "\n\n".join(hw_items[:30])
             return result_text
         else:
-            return f"ℹ️ Страница открыта, но записей с ДЗ на этой странице не найдено.\nСсылка: {target_url}"
+            return f"ℹ️ Страница открыта, но предметов с ДЗ на ней не найдено.\nСсылка: {target_url}"
 
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
@@ -137,28 +158,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if text == "📚 Получить ДЗ":
         if user_id not in user_sessions:
-            await update.message.reply_text("Сначала отправьте вашу строку `Cookie:` из браузера!", parse_mode="Markdown")
+            await update.message.reply_text("Сначала отправьте вашу строку Cookie из браузера!")
             return
         await update.message.reply_text("⏳ Запрашиваю домашнее задание...")
         data = fetch_homework(user_sessions[user_id])
-        await update.message.reply_text(data, parse_mode="Markdown")
+        await send_long_message(update, data)
         return
 
     if text == "🚪 Выйти / Сбросить Cookie":
         if user_id in user_sessions:
             del user_sessions[user_id]
-        await update.message.reply_text("Cookie сброшен. Отправьте новую строку `Cookie:` для входа.")
+        await update.message.reply_text("Cookie сброшен. Отправьте новую строку Cookie для входа.")
         return
 
     user_sessions[user_id] = text
     await update.message.reply_text("✅ Cookie сохранен! Проверяю получение ДЗ...", reply_markup=get_keyboard())
     
     data = fetch_homework(text)
-    await update.message.reply_text(data, parse_mode="Markdown")
+    await send_long_message(update, data)
 
 async def start_bot() -> None:
     if not TELEGRAM_TOKEN:
-        print("Ошибка: Переменная окружения BOT_TOKEN не задана на Render!")
+        print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
         return
 
     app_tg = Application.builder().token(TELEGRAM_TOKEN).build()
