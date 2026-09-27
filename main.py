@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import asyncio  # Добавили встроенную библиотеку для управления потоками
 from flask import Flask
 import requests
 from bs4 import BeautifulSoup
@@ -19,7 +20,6 @@ def health():
     return "OK", 200
 
 def run_web_server():
-    # Render автоматически выделяет порт в переменной окружения PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 # ----------------------------------------
@@ -78,7 +78,7 @@ def fetch_homework(session: requests.Session) -> str:
         if not hw_items:
             tables = soup.find_all('table')
             if tables:
-                for tr in tables[0].find_all('tr'):
+                for tr in tables.find_all('tr'):
                     tds = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
                     if len(tds) >= 2:
                         hw_items.append(" — ".join(tds))
@@ -140,10 +140,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"❌ Ошибка соединения: {e}")
 
 
-def main() -> None:
-    # Запускаем веб-сервер Flask в отдельном потоке (фоном)
-    threading.Thread(target=run_web_server, daemon=True).start()
-
+# Новая асинхронная функция запуска
+async def start_bot() -> None:
     if not TELEGRAM_TOKEN:
         print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
         return
@@ -152,8 +150,24 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Бот запущен вместе с Flask сервером!")
-    app.run_polling()
+    # Корректно инициализируем и запускаем бота
+    await app.initialize()
+    await app.updater.start_polling()
+    await app.start()
+    
+    print("🤖 Бот успешно запущен в цикле событий asyncio!")
+    
+    # Держим бота запущенным бесконечно
+    while True:
+        await asyncio.sleep(3600)
+
+
+def main() -> None:
+    # Запускаем веб-сервер Flask в отдельном потоке (фоном)
+    threading.Thread(target=run_web_server, daemon=True).start()
+
+    # Запускаем асинхронный цикл событий для Telegram-бота
+    asyncio.run(start_bot())
 
 
 if __name__ == "__main__":
